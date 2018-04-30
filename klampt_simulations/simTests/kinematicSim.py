@@ -18,6 +18,7 @@ from klampt.model import ik,coordinates
 from klampt.math import so3
 import klampt.model.collide as collide
 import time
+import numpy as np
 import math
 import buildWorld as bW
 sys.path.append("./kinematics/")
@@ -48,8 +49,8 @@ if __name__ == "__main__":
     ## Get walls
     ## Two rooms separated by a wall with a window
     #bW.getDoubleRoomWindow(world, 8, 8, 1.2)
-    
-    ## Two rooms separated by a wall with a door 
+
+    ## Two rooms separated by a wall with a door
     bW.getDoubleRoomDoor(world, 8, 8, 1)
 
     ## Add the world to the visualizer
@@ -59,23 +60,13 @@ if __name__ == "__main__":
     vp.w,vp.h = 1200,800
     vis.setViewport(vp)
 
-    ## Create robot object. Change the class to the desired robot. 
+    ## Create robot object. Change the class to the desired robot.
     ## Also, make sure the robot class corresponds to the robot in simpleWorld.xml file
     #robot = kobuki(world.robot(0), vis)
     #robot.setAltitude(0.01)
 
     robot = turtlebot(world.robot(0), "turtle", vis)
     robot.setAltitude(0.02)
-    
-    #robot = sphero6DoF(world.robot(0), "sphero", vis)
-
-    ## Display the world coordinate system
-    vis.add("WCS", [so3.identity(),[0,0,0]])
-    vis.setAttribute("WCS", "size", 24)
-
-
-    #print "Visualization items:"
-    #vis.listItems(indent=2)
 
     #vis.autoFitCamera()
     vis.addText("textCol", "No collision")
@@ -88,68 +79,116 @@ if __name__ == "__main__":
     vis.setAttribute("textConfig","size",24)
     vis.addText("textbottom","WCS: X-axis Red, Y-axis Green, Z-axis Blue",(20,-30))
 
+
+
+
+    # PLANNER CALLED HERE
+    robot.setConfig([3, 3, math.pi])
+    q_init = robot.getConfig()
+    q_goal = [3, -3, math.pi / 2]
+    print("Finding path from q_init to q_goal...")
+    startTime = time.time()
+    path = find_path(world, robot, q_init, q_goal, 1000)
+    planTime = time.time() - startTime
+    print("Plan time: %d seconds" % planTime)
+
+    robot.setConfig(q_init)
+
+    start_xy = q_init[:1]
+    start_angle = q_init[2]
+
+    curr_path_item = 0
+    target_xy = path[0][:2]
+    target_angle = path[0][2]
+
+    angle_diff = math.atan2(math.sin(target_angle - start_angle), math.cos(target_angle - start_angle))
+
+    # Only setting to suppress warnings
+    dist_moved = 0
+    target_mag = 0
+
+    # Determines how quickly the robot will move with respect to time. This is arbitrary.
+    angle_step = 1
+    xy_step = .3
+
+    is_rotating = True  # is translating when False
+    rads_rotated = 0
+
+    reached_goal = False
+
     print "Starting visualization window#..."
 
     ## Run the visualizer, which runs in a separate thread
     vis.setWindowTitle("Visualization for kinematic simulation")
 
-    #print(next(collisionFlag))
+    # print(next(collisionFlag))
     vis.show()
     simTime = 500
     startTime = time.time()
     oldTime = startTime
 
-
-    # PLANNER CALLED HERE
-    robot.setConfig([3, 3, 180])
-    q_init = robot.getConfig()
-    q_goal = [3, -3, 90]
-    print("Finding path from q_init to q_goal...")
-    path = find_path(world, robot, q_init, q_goal)
-    curr_path_item = 0
-    is_rotating = True  # is translating when False
-    target_xy = path[curr_path_item][:1]
-    target_angle = path[curr_path_item][2]
-
-    while vis.shown() and (time.time() - startTime < simTime):
+    while vis.shown() and not reached_goal:
         vis.lock()
-        ## You may modify the world here.
-        ## Specifying change in configuration of the robot
 
-        
-        ## Turtlebot  2DoF Non-holonomic
-        ## The controls are in terms of forward velocity (along x-axis) and angular velocity (about z-axis)
-        ## The state of the robot is described as (x, y, alpha)
-        ## The kinematics for converting the control inputs to the state vector is given in the function turtlebot.controlKin
-
-        # Forward velocity
-        vel = 0.5*math.cos(time.time())
-        # Angular velocity
-        omega = math.sin(time.time())
         deltaT = time.time() - oldTime
         oldTime = time.time()
-        robot.velControlKin(vel, omega, deltaT)
+        # robot.velControlKin(vel, omega, deltaT)
 
         curr_config = robot.getConfig()
-        curr_xy = curr_config[:1]
-        curr_angle = curr_config[2]
+        curr_xy = curr_config[:2]
+        curr_angle = math.degrees(curr_config[2])
 
-        # My logic for determining motion based on path
-        # If arrived at destination, switch to next configuration.
+        #My logic for determining motion based on path
+        #If arrived at destination, switch to next configuration.
         if is_rotating:
             # Check to see how far away from angle destination
-            if curr_angle is not target_angle:
-                # TODO: rotate towards target angle
-                # TODO: Then, if has passed target, set equal to target. Set flag to translate if not at final goal config.
-                pass
+            if rads_rotated < abs(angle_diff):
+                # Rotate towards target angle.
+
+                # Apply movement.
+                robot.velControlKin(0, np.sign(angle_diff) * angle_step, deltaT)
+
+                rads_rotated = rads_rotated + angle_step * deltaT
+
+            else:
+                # Finished with rotation. Snap rotation to target in case of overshooting.
+                robot.setConfig([curr_config[0], curr_config[1], target_angle])
+                curr_path_item = curr_path_item + 1
+                is_rotating = False
+                # Get ready for translation on next vis update.
+                target_xy = path[curr_path_item - 1][:2]
+                x_diff = target_xy[0] - curr_xy[0]
+                y_diff = target_xy[1] - curr_xy[1]
+                dist_moved = 0
+                target_mag = math.sqrt(x_diff ** 2 + y_diff ** 2)
+                if curr_path_item < len(path):
+                    # Prepare for next rotation after the translation.
+                    rads_rotated = 0
+                    start_angle = target_angle
+                    target_angle = path[curr_path_item][2]
+                    #angle_diff = target_angle - start_angle
+                    #angle_diff = abs((angle_diff + 180) % 360) - 180
+                    angle_diff = math.atan2(math.sin(target_angle - start_angle), math.cos(target_angle - start_angle))
+
         else:
             # Check how far away from x,y destination
-            if curr_xy is not target_xy:
-                # TODO: translate towards target xy
-                # TODO: Then, if has passed target, set equal to target. Set flag to rotate if not at final goal config.
-                    # TODO: If not at goal config, increment curr_path_item and set appropriate xy and t goals
-                pass
-            pass
+            if dist_moved < target_mag:
+                # Translate towards target xy
+
+                # Apply movement
+                robot.velControlKin(xy_step, 0, deltaT)
+
+                # Check how far the robot has translated
+                dist_moved = dist_moved + xy_step * deltaT
+                curr_config = robot.getConfig()
+
+            else:
+                # Finished with translation. Snap in case of overshooting.
+                robot.setConfig([target_xy[0], target_xy[1], curr_config[2]])
+                is_rotating = True
+
+                if curr_path_item == len(path):
+                    reached_goal = True
 
         q = robot.getConfig()
         q2f = [ '{0:.2f}'.format(elem) for elem in q]
@@ -164,7 +203,7 @@ if __name__ == "__main__":
             for i,j in collRT2:
                 collisionFlag = True
                 strng = world.robot(iR).getName() + " collides with " + j.getName()
-                print(strng)
+                # print(strng)
                 vis.addText("textCol", strng)
                 vis.setColor("textCol", 0.8500, 0.3250, 0.0980)
 
@@ -174,7 +213,6 @@ if __name__ == "__main__":
             vis.setColor("textCol", 0.4660, 0.6740, 0.1880)
 
         vis.unlock()
-        #changes to the visualization must be done outside the lock
         time.sleep(0.01)
     vis.clearText()
 
