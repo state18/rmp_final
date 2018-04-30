@@ -97,11 +97,11 @@ class RRT:
         return nearest_node_id
 
     def get_nearest_neighbors_by_angle(self, q, num_segs):
-        nearest_neighbors = np.empty(num_segs, np.dtype(object))
+        nearest_neighbors = np.empty(num_segs, np.dtype(int))
         min_dists = np.ones(num_segs) * np.inf
         t_step = 2*math.pi / num_segs
         for node in self.nodes:
-            dist = abs(node.x - q[0] + abs(node.y - q[1]))
+            dist = abs(node.x - q[0]) + abs(node.y - q[1])
             # Which segment does this node belong to?
             t = math.atan2(node.y - q[1], node.x - q[0])
             if t < 0:
@@ -114,7 +114,7 @@ class RRT:
                 if t >= lower_bound and t < upper_bound:
                     if dist < min_dists[i]:
                         min_dists[i] = dist
-                        nearest_neighbors[i] = node
+                        nearest_neighbors[i] = node.id
                     break
                 else:
                     lower_bound = upper_bound
@@ -226,7 +226,8 @@ class RRT:
         chosen_neighbor = []
 
         # TODO: Try each of the neighbors, in order of closeness...
-        for neighbor in nearest_neighbors:
+        for neighbor_id in nearest_neighbors:
+            neighbor = self.adj_list[neighbor_id][0]
             # First, rotate so the robot is facing towards q. Test for collision periodically.
             # Angular interpolation
             start_t = neighbor.t
